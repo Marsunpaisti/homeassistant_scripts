@@ -38,6 +38,25 @@ blueprint:
         entity:
           multiple: false
 
+    earliest_alarm_time:
+      name: Earliest allowed alarm time
+      description:
+        The automation will only activate if the alarm timestamp falls at or after
+        this time of day. Use this to prevent triggering for alarms outside your
+        wake-up window (e.g. evening alarms).
+      default: "04:00:00"
+      selector:
+        time: {}
+
+    latest_alarm_time:
+      name: Latest allowed alarm time
+      description:
+        The automation will only activate if the alarm timestamp falls at or before
+        this time of day.
+      default: "13:00:00"
+      selector:
+        time: {}
+
     offset_minutes:
       name: Offset from alarm timestamp
       description:
@@ -136,6 +155,8 @@ variables:
   light_entity: !input light_entity
   sensor: !input timestamp_sensor
   check_entity: !input check_entity
+  earliest_alarm_time: !input earliest_alarm_time
+  latest_alarm_time: !input latest_alarm_time
   offset_minutes: !input offset_minutes
   sunrise_duration: !input sunrise_duration
   start_brightness: !input start_brightness
@@ -178,16 +199,21 @@ action:
   # Wait for the sensor to have a valid timestamp
   - wait_template: "{{ as_timestamp(states(sensor), None) != None }}"
 
-  # Wait until we are within the offset window before the alarm
+  # Wait until we are within the offset window before the alarm,
+  # and the alarm time falls within the allowed time-of-day range.
   # (states('none') returns 'unknown', so omitting check_entity always passes)
   - wait_template: >
       {{
         0 < as_timestamp(states(sensor)) - as_timestamp(now())
         <= offset_seconds
         and states(check_entity) in ['unknown', 'on', 'home']
+        and earliest_alarm_time
+            <= as_local(as_datetime(states(sensor))).strftime('%H:%M:%S')
+            <= latest_alarm_time
       }}
 
-  # Re-check after the wait in case the alarm was cancelled or state changed
+  # Re-check after the wait in case the alarm was cancelled or state changed.
+  # Also guard that the light is currently off — skip if already on.
   - condition: template
     value_template: "{{ as_timestamp(states(sensor), None) != None }}"
 
@@ -197,6 +223,10 @@ action:
         0 < as_timestamp(states(sensor)) - as_timestamp(now())
         <= offset_seconds
         and states(check_entity) in ['unknown', 'on', 'home']
+        and earliest_alarm_time
+            <= as_local(as_datetime(states(sensor))).strftime('%H:%M:%S')
+            <= latest_alarm_time
+        and states(light_entity) == 'off'
       }}
 
   # Capture the exact moment the sunrise starts
