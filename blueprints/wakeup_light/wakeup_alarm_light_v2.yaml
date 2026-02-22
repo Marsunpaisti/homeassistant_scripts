@@ -1,0 +1,290 @@
+blueprint:
+  name: Wake-up light alarm with sunrise effect (v2)
+  description:
+    "A wake-up light alarm that starts a configurable number of minutes before
+    the alarm timestamp, smoothly interpolating brightness and color temperature
+    (specified as a percentage of the light's supported range) over the sunrise
+    duration. Stops automatically if the light is turned off mid-sunrise."
+  domain: automation
+
+  input:
+    light_entity:
+      name: Wake-up light entity
+      description:
+        The light to control. Turning it off during the sunrise will stop
+        the sunrise. Color temperature range is auto-detected from the light.
+      selector:
+        entity:
+          domain:
+            - light
+          multiple: false
+
+    timestamp_sensor:
+      name: Alarm timestamp sensor
+      description: "Sensor with the next alarm timestamp (device_class: timestamp). Intended for the 'Next alarm' sensor from the mobile app."
+      selector:
+        entity:
+          device_class:
+            - timestamp
+          multiple: false
+
+    check_entity:
+      name: Additional entity to check before sunrise is triggered
+      description:
+        If set, checks if the entity is 'on' or 'home' before triggering.
+        Use e.g. a (workday) sensor, device_tracker or person entity.
+      default: none
+      selector:
+        entity:
+          multiple: false
+
+    offset_minutes:
+      name: Offset from alarm timestamp
+      description:
+        The sunrise will start this many minutes before the alarm timestamp.
+        For example, an offset of 30 starts the sunrise 30 minutes before the alarm.
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 120
+          step: 1
+          unit_of_measurement: min
+          mode: slider
+
+    sunrise_duration:
+      name: Sunrise duration
+      description:
+        How long the brightness and color temperature transition lasts,
+        starting from when the sunrise begins.
+      default: 25
+      selector:
+        number:
+          min: 5
+          max: 60
+          step: 5
+          unit_of_measurement: min
+          mode: slider
+
+    start_brightness:
+      name: Starting brightness
+      description:
+        The brightness to start with. Some lights ignore very low values
+        and may turn on with full brightness instead!
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 255
+          step: 1
+
+    end_brightness:
+      name: Ending brightness
+      description: The brightness to reach by the end of the sunrise duration.
+      default: 255
+      selector:
+        number:
+          min: 5
+          max: 255
+          step: 1
+
+    start_color_temp_pct:
+      name: Starting color temperature (%)
+      description:
+        "Starting color temperature as a percentage of the light's supported
+        range. 0% = warmest (most orange/red), 100% = coolest (white/daylight).
+        The actual Kelvin value is auto-calculated from the light's min/max."
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    end_color_temp_pct:
+      name: Ending color temperature (%)
+      description:
+        "Ending color temperature as a percentage of the light's supported
+        range. 0% = warmest (most orange/red), 100% = coolest (white/daylight).
+        The actual Kelvin value is auto-calculated from the light's min/max."
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    pre_sunrise_actions:
+      name: Pre-sunrise actions
+      description: Optional actions to run before sunrise starts.
+      default: []
+      selector:
+        action: {}
+
+    post_sunrise_actions:
+      name: Post-sunrise actions
+      description: Optional actions to run after sunrise ends.
+      default: []
+      selector:
+        action: {}
+
+variables:
+  light_entity: !input light_entity
+  sensor: !input timestamp_sensor
+  check_entity: !input check_entity
+  offset_minutes: !input offset_minutes
+  sunrise_duration: !input sunrise_duration
+  start_brightness: !input start_brightness
+  end_brightness: !input end_brightness
+  start_color_temp_pct: !input start_color_temp_pct
+  end_color_temp_pct: !input end_color_temp_pct
+
+  offset_seconds: "{{ float(offset_minutes) * 60 }}"
+  sunrise_seconds: "{{ float(sunrise_duration) * 60 }}"
+  range_brightness: "{{ float(end_brightness) - float(start_brightness) }}"
+  tick_time: "{{ float(sunrise_seconds) / float(range_brightness) }}"
+
+  # Kelvin range from light entity (static capability attributes, available even when off)
+  light_min_kelvin: "{{ state_attr(light_entity, 'min_color_temp_kelvin') | int(2202) }}"
+  light_max_kelvin: "{{ state_attr(light_entity, 'max_color_temp_kelvin') | int(6535) }}"
+  start_kelvin: >
+    {{
+      (
+        light_min_kelvin
+        + (light_max_kelvin - light_min_kelvin)
+        * float(start_color_temp_pct) / 100
+      ) | int
+    }}
+  end_kelvin: >
+    {{
+      (
+        light_min_kelvin
+        + (light_max_kelvin - light_min_kelvin)
+        * float(end_color_temp_pct) / 100
+      ) | int
+    }}
+
+trigger:
+  - platform: time_pattern
+    minutes: "*"
+
+condition: []
+
+action:
+  # Wait for the sensor to have a valid timestamp
+  - wait_template: "{{ as_timestamp(states(sensor), None) != None }}"
+
+  # Wait until we are within the offset window before the alarm
+  # (states('none') returns 'unknown', so omitting check_entity always passes)
+  - wait_template: >
+      {{
+        0 < as_timestamp(states(sensor)) - as_timestamp(now())
+        <= offset_seconds
+        and states(check_entity) in ['unknown', 'on', 'home']
+      }}
+
+  # Re-check after the wait in case the alarm was cancelled or state changed
+  - condition: template
+    value_template: "{{ as_timestamp(states(sensor), None) != None }}"
+
+  - condition: template
+    value_template: >
+      {{
+        0 < as_timestamp(states(sensor)) - as_timestamp(now())
+        <= offset_seconds
+        and states(check_entity) in ['unknown', 'on', 'home']
+      }}
+
+  # Capture the exact moment the sunrise starts
+  - variables:
+      sunrise_started_timestamp: "{{ as_timestamp(now()) }}"
+
+  # Run any pre-sunrise actions
+  - choose: []
+    default: !input pre_sunrise_actions
+
+  # Turn on the light at the starting values
+  - choose:
+      - conditions:
+          - "{{ state_attr(light_entity, 'min_color_temp_kelvin') != None }}"
+        sequence:
+          - service: light.turn_on
+            data:
+              brightness: "{{ start_brightness }}"
+              color_temp_kelvin: "{{ start_kelvin }}"
+            target:
+              entity_id: !input light_entity
+    default:
+      - service: light.turn_on
+        data:
+          brightness: "{{ start_brightness }}"
+        target:
+          entity_id: !input light_entity
+
+  # Sunrise loop: runs until duration elapses or the light is turned off
+  - repeat:
+      while:
+        - "{{ states(light_entity) == 'on' }}"
+        - >
+          {{
+            as_timestamp(now()) - sunrise_started_timestamp
+            < sunrise_seconds
+          }}
+      sequence:
+        - delay: "{{ tick_time }}"
+
+        - choose:
+            - conditions:
+                - "{{ states(light_entity) == 'on' }}"
+                - "{{ 0 < state_attr(light_entity, 'brightness') | int(0) < end_brightness | int }}"
+              sequence:
+                # Calculate interpolation progress based on elapsed time
+                - variables:
+                    elapsed: "{{ as_timestamp(now()) - sunrise_started_timestamp }}"
+                    progress: "{{ [elapsed / sunrise_seconds, 1.0] | min }}"
+
+                - choose:
+                    - conditions:
+                        - "{{ state_attr(light_entity, 'min_color_temp_kelvin') != None }}"
+                      sequence:
+                        - service: light.turn_on
+                          data:
+                            brightness: >
+                              {{
+                                (
+                                  float(start_brightness)
+                                  + float(range_brightness) * progress
+                                ) | int(0)
+                              }}
+                            color_temp_kelvin: >
+                              {{
+                                (
+                                  float(start_kelvin)
+                                  + (float(end_kelvin) - float(start_kelvin)) * progress
+                                ) | int(0)
+                              }}
+                          target:
+                            entity_id: !input light_entity
+                  default:
+                    - service: light.turn_on
+                      data:
+                        brightness: >
+                          {{
+                            (
+                              float(start_brightness)
+                              + float(range_brightness) * progress
+                            ) | int(0)
+                          }}
+                      target:
+                        entity_id: !input light_entity
+
+  # Run any post-sunrise actions
+  - choose: []
+    default: !input post_sunrise_actions
+
+mode: single
+max_exceeded: silent
