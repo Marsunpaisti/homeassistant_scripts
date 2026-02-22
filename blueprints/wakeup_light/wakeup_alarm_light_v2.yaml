@@ -214,10 +214,12 @@ action:
 
   # Re-check after the wait in case the alarm was cancelled or state changed.
   # Also guard that the light is currently off — skip if already on.
-  - condition: template
+  - alias: "Sensor has valid timestamp"
+    condition: template
     value_template: "{{ as_timestamp(states(sensor), None) != None }}"
 
-  - condition: template
+  - alias: "Alarm is within offset window, check entity allows it, and light is off"
+    condition: template
     value_template: >
       {{
         0 < as_timestamp(states(sensor)) - as_timestamp(now())
