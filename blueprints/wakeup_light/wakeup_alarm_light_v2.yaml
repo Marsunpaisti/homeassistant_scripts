@@ -239,9 +239,13 @@ action:
         <= latest_alarm_time
       }}
 
-  - alias: "Light is off"
+  - alias: "Light is off (or on at zero brightness)"
     condition: template
-    value_template: "{{ states(light_entity) == 'off' }}"
+    value_template: >
+      {{
+        states(light_entity) == 'off'
+        or state_attr(light_entity, 'brightness') | int(0) == 0
+      }}
 
   # Capture the exact moment the sunrise starts
   - variables:
