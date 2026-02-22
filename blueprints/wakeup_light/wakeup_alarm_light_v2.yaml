@@ -218,18 +218,30 @@ action:
     condition: template
     value_template: "{{ as_timestamp(states(sensor), None) != None }}"
 
-  - alias: "Alarm is within offset window, check entity allows it, and light is off"
+  - alias: "Alarm is within offset window"
     condition: template
     value_template: >
       {{
         0 < as_timestamp(states(sensor)) - as_timestamp(now())
         <= offset_seconds
-        and states(check_entity) in ['unknown', 'on', 'home']
-        and earliest_alarm_time
-            <= as_local(as_datetime(states(sensor))).strftime('%H:%M:%S')
-            <= latest_alarm_time
-        and states(light_entity) == 'off'
       }}
+
+  - alias: "Check entity allows trigger"
+    condition: template
+    value_template: "{{ states(check_entity) in ['unknown', 'on', 'home'] }}"
+
+  - alias: "Alarm time is within allowed window"
+    condition: template
+    value_template: >
+      {{
+        earliest_alarm_time
+        <= as_local(as_datetime(states(sensor))).strftime('%H:%M:%S')
+        <= latest_alarm_time
+      }}
+
+  - alias: "Light is off"
+    condition: template
+    value_template: "{{ states(light_entity) == 'off' }}"
 
   # Capture the exact moment the sunrise starts
   - variables:
