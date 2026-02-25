@@ -1,3 +1,4 @@
 .env
 **/.env
 **/settings.local.json
+.mcp.json
